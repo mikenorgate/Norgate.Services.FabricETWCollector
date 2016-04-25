@@ -4,6 +4,7 @@ using System.Fabric;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.ServiceFabric.Services.Runtime;
+using Norgate.Services.FabricETWCollector.Core;
 
 namespace Norgate.Services.FabricETWCollector.Service
 {

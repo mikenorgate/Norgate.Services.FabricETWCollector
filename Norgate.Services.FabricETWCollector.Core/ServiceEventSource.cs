@@ -7,10 +7,10 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.ServiceFabric.Services.Runtime;
 
-namespace Norgate.Services.FabricETWCollector.Service
+namespace Norgate.Services.FabricETWCollector.Core
 {
-    [EventSource(Name = "MyCompany-Norgate.Services.FabricETWCollector-Service")]
-    internal sealed class ServiceEventSource : EventSource
+    [EventSource(Name = "Norgate-FabricETWCollector")]
+    public sealed class ServiceEventSource : EventSource
     {
         public static readonly ServiceEventSource Current = new ServiceEventSource();
 
@@ -158,6 +158,13 @@ namespace Norgate.Services.FabricETWCollector.Service
         public void ServiceRequestFailed(string requestTypeName, string exception)
         {
             WriteEvent(ServiceRequestFailedEventId, exception);
+        }
+
+        private const int ErrorEventId = 8;
+        [Event(ErrorEventId, Level = EventLevel.Error, Message = "Error")]
+        public void Error(string exception)
+        {
+            WriteEvent(ErrorEventId, exception);
         }
         #endregion
 

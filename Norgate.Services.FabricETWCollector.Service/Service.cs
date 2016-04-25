@@ -1,11 +1,18 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Fabric;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.ServiceFabric.Services.Communication.Runtime;
 using Microsoft.ServiceFabric.Services.Runtime;
+using Microsoft.Diagnostics.Tracing.Session;
+using System.Reflection;
+using Microsoft.Diagnostics.Tracing;
+using Metrics;
+using Norgate.Services.FabricETWCollector.Drains.InfluxDb;
+using Norgate.Services.FabricETWCollector.Core;
+using System.IO;
+using Newtonsoft.Json;
+using System.Reactive.Subjects;
+using Metrics.Json;
 
 namespace Norgate.Services.FabricETWCollector.Service
 {
@@ -14,37 +21,90 @@ namespace Norgate.Services.FabricETWCollector.Service
     /// </summary>
     internal sealed class Service : StatelessService
     {
+        private IObservable<TraceEvent> _eventStream;
+        private IObservable<MetricValue> _metricStream;
+        private IEnvironment _environment;
+
         public Service(StatelessServiceContext context)
             : base(context)
-        { }
-
-        /// <summary>
-        /// Optional override to create listeners (e.g., TCP, HTTP) for this service replica to handle client or user requests.
-        /// </summary>
-        /// <returns>A collection of listeners.</returns>
-        protected override IEnumerable<ServiceInstanceListener> CreateServiceInstanceListeners()
         {
-            return new ServiceInstanceListener[0];
+            var environment = new ServiceFabricEnvironment();
+            environment.InstanceId = context.InstanceId;
+            environment.PartitionId = context.PartitionId;
+            environment.ServiceTypeName = context.ServiceTypeName;
+            environment.ApplicationName = context.CodePackageActivationContext.ApplicationName;
+            _environment = environment;
         }
 
-        /// <summary>
-        /// This is the main entry point for your service instance.
-        /// </summary>
-        /// <param name="cancellationToken">Canceled when Service Fabric needs to shut down this service instance.</param>
-        protected override async Task RunAsync(CancellationToken cancellationToken)
+        protected async override Task RunAsync(CancellationToken cancellationToken)
         {
-            // TODO: Replace the following sample code with your own logic 
-            //       or remove this RunAsync override if it's not needed in your service.
-
-            long iterations = 0;
-
-            while (true)
+            if (TraceEventSession.IsElevated() != true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                return;
+            }
 
-                ServiceEventSource.Current.ServiceMessage(this, "Working-{0}", ++iterations);
+            var configPath = Path.Combine(Context.CodePackageActivationContext.GetConfigurationPackageObject("Config").Path, "Config.json");
+            var settings = JsonConvert.DeserializeObject<ServiceConfig>(File.ReadAllText(configPath));
 
-                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+            using (var session = new TraceEventSession(Assembly.GetEntryAssembly().FullName))
+            {
+                _eventStream = session.Source.Dynamic.Observe(null);
+
+                EnableConfiguredPerfCounters(settings.PerfCounters);
+                EnabledConfiguredProviders(session, settings.EventProviders);
+
+                RegisterDrains(settings.Drains);
+
+                Task.Factory.StartNew(() => { session.Source.Process(); });
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                }
+                session.Stop();
+            }
+        }
+
+        private void RegisterDrains(DrainConfig config)
+        {
+            if (config.InfluxDb != null)
+            {
+                var influxDrain = new InfluxDbDrain(config.InfluxDb, _environment);
+                _eventStream.Subscribe(influxDrain);
+                _metricStream.Subscribe(influxDrain);
+            }
+        }
+
+        private void EnabledConfiguredProviders(TraceEventSession session, EventProviderConfig[] providers)
+        {
+            foreach (var provider in providers)
+            {
+                session.EnableProvider(provider.Name, provider.Level);
+            }
+        }
+
+        private void EnableConfiguredPerfCounters(PerfCounterConfig config)
+        {
+            foreach (var counter in config.PerfCounters)
+            {
+                Metric.PerformanceCounter(counter.Name, counter.CounterCategory, counter.CounterName, counter.CounterInstance, counter.Unit);
+            }
+
+            Metric.Config
+                .WithSystemCounters()
+                .WithReporting(r =>
+                {
+                    var report = new ObservableMetricReport();
+                    r.WithReport(report, config.CollectionInterval);
+                    _metricStream = report.MetricSream;
+                })
+                .WithJsonDeserialzier(j=>JsonConvert.DeserializeObject<JsonMetricsContext>(j));
+
+            if (config.RemoteMetrics != null)
+            {
+                foreach (var remote in config.RemoteMetrics)
+                {
+                    Metric.Config.RegisterRemote(remote.Name, new Uri(remote.Url), remote.CollectionInterval);
+                }
             }
         }
     }

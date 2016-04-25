@@ -243,3 +243,4 @@ ModelManifest.xml
 
 # FAKE - F# Make
 .fake/
+/Norgate.Services.FabricETWCollector.Service/PackageRoot/Config/Config.json
